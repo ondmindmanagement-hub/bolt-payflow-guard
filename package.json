@@ -1,0 +1,6 @@
+{
+  "name":"bolt-payflow-guard",
+  "version":"0.1.0",
+  "type":"module",
+  "scripts":{"demo":"node paypal-order.js"}
+}
