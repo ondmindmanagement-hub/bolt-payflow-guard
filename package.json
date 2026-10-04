@@ -1,6 +1,9 @@
 {
   "name":"bolt-payflow-guard",
-  "version":"0.1.0",
+  "version":"0.2.0",
   "type":"module",
-  "scripts":{"demo":"node paypal-order.js"}
+  "scripts":{
+    "ai":"node ai-recommend.js",
+    "paypal":"node paypal-order.js"
+  }
 }
