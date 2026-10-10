@@ -1,44 +1,42 @@
-# BOLT Payflow Guard
+# BOLT PayFlow Guard — PayPal Sandbox Approval Demo
 
-BOLT Payflow Guard is a governed AI-to-payment workflow prototype for the PayPal AI Hackathon.
+Unfire's experimental payment-approval workflow for the PayPal AI Hackathon 2026. This repository implements a local AI recommendation, mandatory exact-amount human approval in the same process and optional PayPal Orders V2 Sandbox order creation. No captures, real money transfers, real PayPal endpoints or background execution.
 
-## Flow
+## Test the no-credential functional demonstration
 
-1. A local AI model running in Ollama analyzes a natural-language payment request and returns a structured recommendation. The AI is advisory only and cannot execute payments.
-2. A separate BOLT approval gate blocks the payment step unless explicit human approval is present.
-3. After approval, the PayPal module authenticates with OAuth 2.0 and creates a PayPal Orders v2 Sandbox order.
+Requires Node.js 20+. No npm install needed.
 
-## AI integration
+    npm test
+    npm run demo
 
-The demo uses Ollama with `qwen2.5:7b` by default, so the AI part can run locally without cloud credentials.
+Demo mode uses a canned simulated recommendation, NOT actual AI inference, and makes no network calls. Type APPROVE 1.00 EUR exactly to generate a mock-only order. Any other input blocks the workflow.
 
-Run:
+## Real local AI + PayPal Sandbox (test-only)
 
-`npm run ai -- "Pay 1 EUR for a test purchase"`
+1. Install Ollama and pull qwen2.5:7b, or set OLLAMA_MODEL to a locally installed model. Start Ollama at 127.0.0.1:11434.
+2. Create PayPal Sandbox client credentials at https://developer.paypal.com/ . NEVER use live credentials.
+3. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET locally. Do not commit credentials.
+4. Run:
 
-The model returns JSON with `should_pay`, `amount_eur`, and `reason`.
+    npm run sandbox
 
-## PayPal integration
+5. If the local AI suggests an appropriate sandbox test order, type APPROVE followed by the exact displayed amount and EUR. Refusal or a mismatched amount blocks the request.
 
-Requires PayPal Sandbox credentials. Keep them in environment variables only:
+The only PayPal endpoints in the new workflow are https://api-m.sandbox.paypal.com/v1/oauth2/token and https://api-m.sandbox.paypal.com/v2/checkout/orders . Sandbox order creation never calls a capture or live payment endpoint. For judging, a tester must provide their own PayPal Sandbox credentials and a running local Ollama instance. The no-credential demo alone does not prove that a real PayPal Sandbox API request or AI inference occurred.
 
-- `PAYPAL_CLIENT_ID`
-- `PAYPAL_CLIENT_SECRET`
-- optional `PAYPAL_BASE_URL` (defaults to the Sandbox API)
+## Changes made after 1 October 2026
 
-Then explicitly approve the sandbox transaction with `BOLT_APPROVED=1` and run `npm run paypal -- 1.00`.
+- secure-flow.js: integrates local AI recommendation, exact-amount approval and PayPal Sandbox order creation.
+- Strict AI plan parsing and demo-only 0.01–50.00 EUR limit.
+- Human approval tied to exact displayed amount and unique order intent; reuse rejected in the same workflow.
+- PayPal Sandbox endpoint is fixed in code, not configurable to the Live endpoint.
+- Deprecated the previous BOLT_APPROVED=1 environment-variable authorization because this was not an adequate human approval mechanism.
+- Automated unit tests use mocked HTTP requests, so tests require no keys or paid services.
 
-Without approval, the payment module exits before contacting PayPal.
+## Boundaries
 
-## Security and governance
+This is a single-operator terminal demonstration, not a production payment-authorization system. The terminal operator is not independently authenticated. There is no durable RBAC/SSO, cross-process replay defense, transaction signing by an external identity provider, regulatory certification, or full PayPal merchant checkout workflow. No real payments should be executed with this repository.
 
-- No PayPal credentials are committed.
-- PayPal Sandbox is the default environment.
-- AI can recommend but cannot bypass the human approval gate.
-- `PayPal-Request-Id` is sent for request traceability/idempotency.
-- Local `.env` files are ignored.
+The standalone ai-recommend.js remains as an example. The old paypal-order.js has been disabled. Use secure-flow.js for the governed path.
 
-## Team
-
-Omar Baró — Founder, Unfire
-https://unfire.technology
+Author: Omar Baró — Unfire — https://unfire.technology

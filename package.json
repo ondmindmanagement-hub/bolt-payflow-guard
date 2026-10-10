@@ -1,9 +1,11 @@
 {
-  "name":"bolt-payflow-guard",
-  "version":"0.2.0",
-  "type":"module",
-  "scripts":{
-    "ai":"node ai-recommend.js",
-    "paypal":"node paypal-order.js"
+  "name": "bolt-payflow-guard",
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "ai": "node ai-recommend.js",
+    "demo": "node secure-flow.js --demo",
+    "sandbox": "node secure-flow.js --ollama --sandbox",
+    "test": "node --test"
   }
 }
