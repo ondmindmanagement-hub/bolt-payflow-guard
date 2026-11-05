@@ -269,3 +269,45 @@ test('failed upstream transaction cannot be reapproved with new gate',async()=>{
   );
   assert.equal(requests,1);
 });
+
+
+test('all local AI and Sandbox HTTP requests set redirect error and finite timeout',async()=>{
+  const all=[];
+  const transport=async(url,opts)=>{
+    all.push(url);
+    assert.equal(opts.redirect,'error');
+    assert.ok(opts.signal instanceof AbortSignal, 'timeout signal missing');
+    assert.equal(opts.signal.aborted,false);
+    if(url==='http://127.0.0.1:11434/api/generate'){
+      return {ok:true,json:async()=>({response:JSON.stringify({
+        should_pay:true,amount_eur:'1.00',reason:'OFFLINE TEST ONLY'
+      })})};
+    }
+    if(url==='https://api-m.sandbox.paypal.com/v1/oauth2/token'){
+      return {ok:true,json:async()=>({access_token:'FAKE_TOKEN'})};
+    }
+    if(url==='https://api-m.sandbox.paypal.com/v2/checkout/orders'){
+      assert.ok(opts.headers['PayPal-Request-Id']);
+      return {ok:true,json:async()=>({id:'SYNTHETIC',status:'CREATED'})};
+    }
+    throw Error('UNEXPECTED_HOST');
+  };
+  const oldId=process.env.PAYPAL_CLIENT_ID;
+  const oldSecret=process.env.PAYPAL_CLIENT_SECRET;
+  process.env.PAYPAL_CLIENT_ID='FAKE_ID';
+  process.env.PAYPAL_CLIENT_SECRET='FAKE_SECRET';
+  try{
+    const result=await run({ollama:true,sandbox:true,ask:async()=> 'APPROVE 1.00 EUR',transport});
+    assert.equal(result.captured,false);
+  }finally{
+    if(oldId===undefined)delete process.env.PAYPAL_CLIENT_ID;
+    else process.env.PAYPAL_CLIENT_ID=oldId;
+    if(oldSecret===undefined)delete process.env.PAYPAL_CLIENT_SECRET;
+    else process.env.PAYPAL_CLIENT_SECRET=oldSecret;
+  }
+  assert.deepEqual(all,[
+    'http://127.0.0.1:11434/api/generate',
+    'https://api-m.sandbox.paypal.com/v1/oauth2/token',
+    'https://api-m.sandbox.paypal.com/v2/checkout/orders'
+  ]);
+});

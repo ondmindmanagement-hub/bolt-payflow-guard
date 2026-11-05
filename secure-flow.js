@@ -63,13 +63,13 @@ export async function paypalSandboxCreate(intent, credentials, transport=fetch) 
   consumedIntents.add(intent);
   const basic = Buffer.from(credentials.id+':'+credentials.secret).toString('base64');
   const tokenRes = await transport(SANDBOX+'/v1/oauth2/token', {
-    method:'POST', headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
+    method:'POST', redirect:'error', signal:AbortSignal.timeout(15000), headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
     body:'grant_type=client_credentials'});
   if (!tokenRes.ok) throw Error('SANDBOX_AUTH_FAILED_'+tokenRes.status);
   const token = await tokenRes.json();
   if (typeof token.access_token !== 'string') throw Error('SANDBOX_TOKEN_MISSING');
   const res = await transport(SANDBOX+'/v2/checkout/orders', {
-    method:'POST', headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json',
+    method:'POST', redirect:'error', signal:AbortSignal.timeout(15000), headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json',
       'PayPal-Request-Id':intent.idempotency_key},
     body:JSON.stringify({intent:'CAPTURE', purchase_units:[{amount:{currency_code:'EUR',value:amount}}]})});
   if (!res.ok) throw Error('SANDBOX_ORDER_FAILED_'+res.status);
@@ -79,7 +79,7 @@ export async function paypalSandboxCreate(intent, credentials, transport=fetch) 
 }
 export async function aiSuggest(prompt, transport=fetch) {
   const result=await transport('http://127.0.0.1:11434/api/generate',{
-    method:'POST', headers:{'Content-Type':'application/json'}, signal:AbortSignal.timeout(15000),
+    method:'POST', redirect:'error', headers:{'Content-Type':'application/json'}, signal:AbortSignal.timeout(15000),
     body:JSON.stringify({model:process.env.OLLAMA_MODEL || 'qwen2.5:7b',stream:false,format:'json',
       prompt:'For a PayPal Sandbox demo ONLY, output JSON with should_pay boolean, amount_eur string, reason string. Do not execute. Reject uncertainty. User request: '+prompt.slice(0,300)})});
   if (!result.ok) throw Error('OLLAMA_UNAVAILABLE_'+result.status);
