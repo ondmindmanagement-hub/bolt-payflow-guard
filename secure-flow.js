@@ -7,6 +7,11 @@ import { stdin, stdout } from 'node:process';
 
 const SANDBOX = 'https://api-m.sandbox.paypal.com';
 
+// Module-private approval state. This is an in-process safety boundary,
+// NOT independent operator authentication or production authorization.
+const issuedIntents = new WeakSet();
+const approvedIntents = new WeakSet();
+
 export function amountEUR(value) {
   if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(value)) {
     throw Error('INVALID_AMOUNT');
@@ -26,23 +31,33 @@ export function validatePlan(raw) {
 export function makeIntent(plan) {
   const intent = {kind:'CREATE_SANDBOX_ORDER', amount_eur:amountEUR(plan.amount_eur),
     currency:'EUR', idempotency_key:randomUUID()};
-  return Object.freeze({...intent, hash:createHash('sha256').update(JSON.stringify(intent)).digest('hex')});
+  const issued = Object.freeze({...intent, hash:createHash('sha256').update(JSON.stringify(intent)).digest('hex')});
+  issuedIntents.add(issued);
+  return issued;
 }
 export class OneUseGate {
   #used=false;
-  constructor(intent) { this.intent = intent; }
+  constructor(intent) {
+    if (!issuedIntents.has(intent)) throw Error('INVALID_INTENT');
+    this.intent = intent;
+  }
   approve(typed, intent) {
     if (this.#used) throw Error('APPROVAL_REPLAY_DENIED');
     if (intent !== this.intent || intent.hash !== this.intent.hash) throw Error('INTENT_MISMATCH');
     if (typed !== 'APPROVE '+this.intent.amount_eur+' EUR') throw Error('HUMAN_APPROVAL_REQUIRED');
     this.#used=true;
+    approvedIntents.add(this.intent);
     return true;
   }
 }
 export async function paypalSandboxCreate(intent, credentials, transport=fetch) {
   if (!intent || intent.kind !== 'CREATE_SANDBOX_ORDER' || intent.currency !== 'EUR') throw Error('INVALID_INTENT');
   const amount = amountEUR(intent.amount_eur);
+  if (!issuedIntents.has(intent)) throw Error('INVALID_INTENT');
   if (!credentials?.id || !credentials?.secret) throw Error('SANDBOX_CREDENTIALS_MISSING');
+  // Consume before any network operation. A retry requires a new intent and
+  // a fresh, exact-amount approval, even after an upstream error.
+  if (!approvedIntents.delete(intent)) throw Error('HUMAN_APPROVAL_REQUIRED');
   const basic = Buffer.from(credentials.id+':'+credentials.secret).toString('base64');
   const tokenRes = await transport(SANDBOX+'/v1/oauth2/token', {
     method:'POST', headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
