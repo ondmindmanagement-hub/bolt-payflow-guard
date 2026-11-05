@@ -96,7 +96,7 @@ test('approved Sandbox intent is single-use even when helper called twice',async
   assert.equal(outbound,2);
   await assert.rejects(
     paypalSandboxCreate(intent,{id:'fake',secret:'fake'},fake),
-    /HUMAN_APPROVAL_REQUIRED/
+    /APPROVAL_REPLAY_DENIED/
   );
   assert.equal(outbound,2);
 });
@@ -120,7 +120,7 @@ test('expired approval cannot retry after a PayPal response error',async()=>{
   const fake=async()=>{outbound++; return {ok:false,status:503};};
   await assert.rejects(paypalSandboxCreate(intent,{id:'fake',secret:'fake'},fake),/SANDBOX_AUTH_FAILED_503/);
   assert.equal(outbound,1);
-  await assert.rejects(paypalSandboxCreate(intent,{id:'fake',secret:'fake'},fake),/HUMAN_APPROVAL_REQUIRED/);
+  await assert.rejects(paypalSandboxCreate(intent,{id:'fake',secret:'fake'},fake),/APPROVAL_REPLAY_DENIED/);
   assert.equal(outbound,1);
 });
 
@@ -228,4 +228,44 @@ test('full local AI + Sandbox happy path uses only three mocked endpoints after 
     'https://api-m.sandbox.paypal.com/v1/oauth2/token',
     'https://api-m.sandbox.paypal.com/v2/checkout/orders'
   ]);
+});
+
+
+test('new approval gate cannot resurrect a consumed intent',async()=>{
+  const intent=makeIntent({amount_eur:'1.00'});
+  let requests=0;
+  const fake=async(url)=>{
+    requests++;
+    return url.endsWith('/token')
+      ? {ok:true,json:async()=>({access_token:'FAKE_TOKEN'})}
+      : {ok:true,json:async()=>({id:'SYNTHETIC_ORDER',status:'CREATED'})};
+  };
+  new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+  await paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake);
+  assert.equal(requests,2);
+  // Independent gate previously approved same intent again after completion.
+  assert.throws(
+    ()=>new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent),
+    /APPROVAL_REPLAY_DENIED/
+  );
+  await assert.rejects(
+    paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake),
+    /APPROVAL_REPLAY_DENIED/
+  );
+  assert.equal(requests,2);
+});
+test('failed upstream transaction cannot be reapproved with new gate',async()=>{
+  const intent=makeIntent({amount_eur:'1.00'});
+  let requests=0;
+  const failing=async()=>{requests++; return {ok:false,status:503};};
+  new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+  await assert.rejects(
+    paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},failing),
+    /SANDBOX_AUTH_FAILED_503/
+  );
+  assert.throws(
+    ()=>new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent),
+    /APPROVAL_REPLAY_DENIED/
+  );
+  assert.equal(requests,1);
 });

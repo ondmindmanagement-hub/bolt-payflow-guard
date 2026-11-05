@@ -11,6 +11,7 @@ const SANDBOX = 'https://api-m.sandbox.paypal.com';
 // NOT independent operator authentication or production authorization.
 const issuedIntents = new WeakSet();
 const approvedIntents = new WeakSet();
+const consumedIntents = new WeakSet();
 
 export function amountEUR(value) {
   if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(value)) {
@@ -42,7 +43,7 @@ export class OneUseGate {
     this.intent = intent;
   }
   approve(typed, intent) {
-    if (this.#used) throw Error('APPROVAL_REPLAY_DENIED');
+    if (this.#used || consumedIntents.has(this.intent)) throw Error('APPROVAL_REPLAY_DENIED');
     if (intent !== this.intent || intent.hash !== this.intent.hash) throw Error('INTENT_MISMATCH');
     if (typed !== 'APPROVE '+this.intent.amount_eur+' EUR') throw Error('HUMAN_APPROVAL_REQUIRED');
     this.#used=true;
@@ -55,9 +56,11 @@ export async function paypalSandboxCreate(intent, credentials, transport=fetch) 
   const amount = amountEUR(intent.amount_eur);
   if (!issuedIntents.has(intent)) throw Error('INVALID_INTENT');
   if (!credentials?.id || !credentials?.secret) throw Error('SANDBOX_CREDENTIALS_MISSING');
-  // Consume before any network operation. A retry requires a new intent and
-  // a fresh, exact-amount approval, even after an upstream error.
+  // Consumed intents must never be reapproved by another OneUseGate instance.
+  if (consumedIntents.has(intent)) throw Error('APPROVAL_REPLAY_DENIED');
   if (!approvedIntents.delete(intent)) throw Error('HUMAN_APPROVAL_REQUIRED');
+  // Consume before any network operation, including when upstream later fails.
+  consumedIntents.add(intent);
   const basic = Buffer.from(credentials.id+':'+credentials.secret).toString('base64');
   const tokenRes = await transport(SANDBOX+'/v1/oauth2/token', {
     method:'POST', headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
