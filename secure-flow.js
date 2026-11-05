@@ -7,6 +7,12 @@ import { stdin, stdout } from 'node:process';
 
 const SANDBOX = 'https://api-m.sandbox.paypal.com';
 
+// Module-private approval state. This is an in-process safety boundary,
+// NOT independent operator authentication or production authorization.
+const issuedIntents = new WeakSet();
+const approvedIntents = new WeakSet();
+const consumedIntents = new WeakSet();
+
 export function amountEUR(value) {
   if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(value)) {
     throw Error('INVALID_AMOUNT');
@@ -26,42 +32,61 @@ export function validatePlan(raw) {
 export function makeIntent(plan) {
   const intent = {kind:'CREATE_SANDBOX_ORDER', amount_eur:amountEUR(plan.amount_eur),
     currency:'EUR', idempotency_key:randomUUID()};
-  return Object.freeze({...intent, hash:createHash('sha256').update(JSON.stringify(intent)).digest('hex')});
+  const issued = Object.freeze({...intent, hash:createHash('sha256').update(JSON.stringify(intent)).digest('hex')});
+  issuedIntents.add(issued);
+  return issued;
 }
 export class OneUseGate {
   #used=false;
-  constructor(intent) { this.intent = intent; }
+  constructor(intent) {
+    if (!issuedIntents.has(intent)) throw Error('INVALID_INTENT');
+    this.intent = intent;
+  }
   approve(typed, intent) {
-    if (this.#used) throw Error('APPROVAL_REPLAY_DENIED');
+    if (this.#used || consumedIntents.has(this.intent)) throw Error('APPROVAL_REPLAY_DENIED');
     if (intent !== this.intent || intent.hash !== this.intent.hash) throw Error('INTENT_MISMATCH');
     if (typed !== 'APPROVE '+this.intent.amount_eur+' EUR') throw Error('HUMAN_APPROVAL_REQUIRED');
     this.#used=true;
+    approvedIntents.add(this.intent);
     return true;
   }
 }
 export async function paypalSandboxCreate(intent, credentials, transport=fetch) {
   if (!intent || intent.kind !== 'CREATE_SANDBOX_ORDER' || intent.currency !== 'EUR') throw Error('INVALID_INTENT');
   const amount = amountEUR(intent.amount_eur);
+  if (!issuedIntents.has(intent)) throw Error('INVALID_INTENT');
   if (!credentials?.id || !credentials?.secret) throw Error('SANDBOX_CREDENTIALS_MISSING');
+  // Consumed intents must never be reapproved by another OneUseGate instance.
+  if (consumedIntents.has(intent)) throw Error('APPROVAL_REPLAY_DENIED');
+  if (!approvedIntents.delete(intent)) throw Error('HUMAN_APPROVAL_REQUIRED');
+  // Consume before any network operation, including when upstream later fails.
+  consumedIntents.add(intent);
   const basic = Buffer.from(credentials.id+':'+credentials.secret).toString('base64');
   const tokenRes = await transport(SANDBOX+'/v1/oauth2/token', {
-    method:'POST', headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
+    method:'POST', redirect:'error', signal:AbortSignal.timeout(15000), headers:{Authorization:'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded'},
     body:'grant_type=client_credentials'});
   if (!tokenRes.ok) throw Error('SANDBOX_AUTH_FAILED_'+tokenRes.status);
   const token = await tokenRes.json();
-  if (typeof token.access_token !== 'string') throw Error('SANDBOX_TOKEN_MISSING');
+  if (typeof token.access_token !== 'string' || !token.access_token.trim()) throw Error('SANDBOX_TOKEN_MISSING');
   const res = await transport(SANDBOX+'/v2/checkout/orders', {
-    method:'POST', headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json',
+    method:'POST', redirect:'error', signal:AbortSignal.timeout(15000), headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json',
       'PayPal-Request-Id':intent.idempotency_key},
     body:JSON.stringify({intent:'CAPTURE', purchase_units:[{amount:{currency_code:'EUR',value:amount}}]})});
   if (!res.ok) throw Error('SANDBOX_ORDER_FAILED_'+res.status);
   const data=await res.json();
-  if (typeof data.id !== 'string') throw Error('SANDBOX_ORDER_ID_MISSING');
+  if (!data || typeof data.id !== 'string' || !data.id.trim() || data.id.length > 255) {
+    throw Error('SANDBOX_ORDER_ID_MISSING');
+  }
+  // A newly created, uncaptured order must not be reported as a completed payment.
+  // PayPal's Order Status enum has additional values for later lifecycle phases.
+  if (!['CREATED','PAYER_ACTION_REQUIRED','APPROVED'].includes(data.status)) {
+    throw Error('SANDBOX_ORDER_STATUS_UNEXPECTED');
+  }
   return {order_id:data.id, status:data.status, amount_eur:amount, sandbox:true, captured:false};
 }
 export async function aiSuggest(prompt, transport=fetch) {
   const result=await transport('http://127.0.0.1:11434/api/generate',{
-    method:'POST', headers:{'Content-Type':'application/json'}, signal:AbortSignal.timeout(15000),
+    method:'POST', redirect:'error', headers:{'Content-Type':'application/json'}, signal:AbortSignal.timeout(15000),
     body:JSON.stringify({model:process.env.OLLAMA_MODEL || 'qwen2.5:7b',stream:false,format:'json',
       prompt:'For a PayPal Sandbox demo ONLY, output JSON with should_pay boolean, amount_eur string, reason string. Do not execute. Reject uncertainty. User request: '+prompt.slice(0,300)})});
   if (!result.ok) throw Error('OLLAMA_UNAVAILABLE_'+result.status);
