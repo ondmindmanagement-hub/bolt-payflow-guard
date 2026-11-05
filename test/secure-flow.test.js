@@ -311,3 +311,64 @@ test('all local AI and Sandbox HTTP requests set redirect error and finite timeo
     'https://api-m.sandbox.paypal.com/v2/checkout/orders'
   ]);
 });
+
+
+test('rejects malformed provider order identifiers instead of reporting success',async()=>{
+  for(const malformed of [{id:'',status:'CREATED'},{id:' ',status:'CREATED'},
+    {id:'X'.repeat(256),status:'CREATED'},{status:'CREATED'},null]){
+    const intent=makeIntent({amount_eur:'1.00'});
+    new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+    const fake=async(url)=>url.endsWith('/token')
+      ? {ok:true,json:async()=>({access_token:'FAKE'})}
+      : {ok:true,json:async()=>malformed};
+    await assert.rejects(
+      paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake),
+      /SANDBOX_ORDER_ID_MISSING/
+    );
+  }
+});
+
+test('rejects post-capture and voided statuses for a newly created order',async()=>{
+  for(const badStatus of ['COMPLETED','VOIDED','SAVED','FAILED',null,undefined,'']){
+    const intent=makeIntent({amount_eur:'1.00'});
+    new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+    const fake=async(url)=>url.endsWith('/token')
+      ? {ok:true,json:async()=>({access_token:'FAKE'})}
+      : {ok:true,json:async()=>({id:'SYNTHETIC_ORDER',status:badStatus})};
+    await assert.rejects(
+      paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake),
+      /SANDBOX_ORDER_STATUS_UNEXPECTED/
+    );
+  }
+});
+
+test('new order response allows only nonfinal, uncaptured order states',async()=>{
+  for(const status of ['CREATED','PAYER_ACTION_REQUIRED','APPROVED']){
+    const intent=makeIntent({amount_eur:'1.00'});
+    new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+    const fake=async(url)=>url.endsWith('/token')
+      ? {ok:true,json:async()=>({access_token:'FAKE'})}
+      : {ok:true,json:async()=>({id:'SYNTHETIC_ORDER',status})};
+    const result=await paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake);
+    assert.equal(result.status,status);
+    assert.equal(result.captured,false);
+    assert.equal(result.order_id,'SYNTHETIC_ORDER');
+  }
+});
+
+test('rejects blank OAuth access tokens before creating order',async()=>{
+  for(const token of ['', '   ',null,undefined]){
+    const intent=makeIntent({amount_eur:'1.00'});
+    new OneUseGate(intent).approve('APPROVE 1.00 EUR',intent);
+    const visited=[];
+    const fake=async(url)=>{
+      visited.push(url);
+      return {ok:true,json:async()=>({access_token:token})};
+    };
+    await assert.rejects(
+      paypalSandboxCreate(intent,{id:'FAKE',secret:'FAKE'},fake),
+      /SANDBOX_TOKEN_MISSING/
+    );
+    assert.equal(visited.length,1);
+  }
+});

@@ -67,14 +67,21 @@ export async function paypalSandboxCreate(intent, credentials, transport=fetch) 
     body:'grant_type=client_credentials'});
   if (!tokenRes.ok) throw Error('SANDBOX_AUTH_FAILED_'+tokenRes.status);
   const token = await tokenRes.json();
-  if (typeof token.access_token !== 'string') throw Error('SANDBOX_TOKEN_MISSING');
+  if (typeof token.access_token !== 'string' || !token.access_token.trim()) throw Error('SANDBOX_TOKEN_MISSING');
   const res = await transport(SANDBOX+'/v2/checkout/orders', {
     method:'POST', redirect:'error', signal:AbortSignal.timeout(15000), headers:{Authorization:'Bearer '+token.access_token,'Content-Type':'application/json',
       'PayPal-Request-Id':intent.idempotency_key},
     body:JSON.stringify({intent:'CAPTURE', purchase_units:[{amount:{currency_code:'EUR',value:amount}}]})});
   if (!res.ok) throw Error('SANDBOX_ORDER_FAILED_'+res.status);
   const data=await res.json();
-  if (typeof data.id !== 'string') throw Error('SANDBOX_ORDER_ID_MISSING');
+  if (!data || typeof data.id !== 'string' || !data.id.trim() || data.id.length > 255) {
+    throw Error('SANDBOX_ORDER_ID_MISSING');
+  }
+  // A newly created, uncaptured order must not be reported as a completed payment.
+  // PayPal's Order Status enum has additional values for later lifecycle phases.
+  if (!['CREATED','PAYER_ACTION_REQUIRED','APPROVED'].includes(data.status)) {
+    throw Error('SANDBOX_ORDER_STATUS_UNEXPECTED');
+  }
   return {order_id:data.id, status:data.status, amount_eur:amount, sandbox:true, captured:false};
 }
 export async function aiSuggest(prompt, transport=fetch) {
